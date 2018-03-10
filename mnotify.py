@@ -10,7 +10,18 @@
 # based on:
 # growl.py
 # Copyright (c) 2011 Sorin Ionescu <sorin.ionescu@gmail.com>
-
+#
+#Changelog:
+#Ver: 0.4 by Antonin Skala tony762@gmx.com 3.2018
+#
+#Changed dcc redex to match new notify appears (weechat notify now contain IP)
+#Added dcc send offer and dcc send start notify
+#Setting for notify is divided to off(don't send), on(always send), away(send only when away).
+#Changed default settings to match new scheme
+#
+#Help:
+#Install and configure msmtp first (msmtp.sourceforge.net/)
+#List and Change plugin settings by /set plugins.var.python.mnotify.*
 
 # -----------------------------------------------------------------------------
 # Imports
@@ -25,7 +36,7 @@ import weechat
 
 SCRIPT_NAME = 'mnotify'
 SCRIPT_AUTHOR = 'maker'
-SCRIPT_VERSION = '0.2'
+SCRIPT_VERSION = '0.4'
 SCRIPT_LICENSE = 'Beerware License'
 SCRIPT_DESC = 'Sends mail notifications upon events.'
 
@@ -34,21 +45,19 @@ SCRIPT_DESC = 'Sends mail notifications upon events.'
 # -----------------------------------------------------------------------------
 SETTINGS = {
     'show_public_message': 'off',
-    'show_private_message': 'on',
+    'show_private_message': 'away',
     'show_public_action_message': 'off',
-    'show_private_action_message': 'on',
+    'show_private_action_message': 'away',
     'show_notice_message': 'off',
-    'show_invite_message': 'on',
-    'show_highlighted_message': 'on',
-    'show_server': 'on',
-    'show_channel_topic': 'on',
+    'show_invite_message': 'away',
+    'show_highlighted_message': 'off',
+    'show_server': 'away',
+    'show_channel_topic': 'off',
     'show_dcc': 'on',
-    'show_upgrade_ended': 'on',
-    'sticky': 'off',
-    'sticky_away': 'on',
-    'sendmail': 'msmtp',
-    'email_to': '',
-    'email_from': 'irc <irc@localhost>'
+    'show_upgrade_ended': 'off',
+    'sendmail': '/usr/bin/msmtp',
+    'email_to': 'somebody@somwhere.xx',
+    'email_from': 'irc@somwhere.xx'
 }
 
 
@@ -70,23 +79,27 @@ UNTAGGED_MESSAGES = {
     'away status':
         re.compile(r'^You ((\w+).){2,3}marked as being away', re.UNICODE),
     'dcc chat request':
-        re.compile(r'^xfer: incoming chat request from (\w+)', re.UNICODE),
+        re.compile(r'^xfer: incoming chat request from ([^\s]+) ', re.UNICODE),
     'dcc chat closed':
-        re.compile(r'^xfer: chat closed with (\w+)', re.UNICODE),
+        re.compile(r'^xfer: chat closed with ([^\s]+) \(', re.UNICODE),
     'dcc get request':
         re.compile(
-            r'^xfer: incoming file from (\w+) [^:]+: ((?:,\w|[^,])+),',
+            r'^xfer: incoming file from ([^\s]+) [^:]+: ((?:,\w|[^,])+),',
             re.UNICODE),
     'dcc get completed':
-        re.compile(r'^xfer: file ([^\s]+) received from \w+: OK', re.UNICODE),
+        re.compile(r'^xfer: file ((?:,\w|[^,])+) received from ([^\s]+) ((?:,\w|[^,]+)): OK$', re.UNICODE),
     'dcc get failed':
         re.compile(
-            r'^xfer: file ([^\s]+) received from \w+: FAILED',
+            r'^xfer: file ((?:,\w|[^,])+) received from ([^\s]+) ((?:,\w|[^,]+)): FAILED$',
             re.UNICODE),
-    'dcc send completed':
-        re.compile(r'^xfer: file ([^\s]+) sent to \w+: OK', re.UNICODE),
+    'dcc send offer':
+        re.compile(r'^xfer: offering file to ([^\s]+) ((?:,\w|[^,])+), name: ((?:,\w|[^,])+) \(local', re.UNICODE),
+	'dcc send start':
+        re.compile(r'^xfer: sending file to ([^\s]+) ((?:,\w|.)+), name: ((?:,\w|[^,])+) \(local', re.UNICODE),
+	'dcc send completed':
+        re.compile(r'^xfer: file ((?:,\w|[^,])+) sent to ([^\s]+) ((?:,\w|[^,]+)): OK$', re.UNICODE),
     'dcc send failed':
-        re.compile(r'^xfer: file ([^\s]+) sent to \w+: FAILED', re.UNICODE),
+        re.compile(r'^xfer: file ((?:,\w|[^,])+) sent to ([^\s]+) ((?:,\w|[^,]+)): FAILED$', re.UNICODE),
 }
 
 
@@ -102,6 +115,8 @@ DISPATCH_TABLE = {
     'dcc get request': 'notify_dcc_get_request',
     'dcc get completed': 'notify_dcc_get_completed',
     'dcc get failed': 'notify_dcc_get_failed',
+	'dcc send offer': 'notify_dcc_send_offer',
+	'dcc send start': 'notify_dcc_send_start',
     'dcc send completed': 'notify_dcc_send_completed',
     'dcc send failed': 'notify_dcc_send_failed',
 }
@@ -118,7 +133,9 @@ STATE = {
 # -----------------------------------------------------------------------------
 def cb_irc_server_connected(data, signal, signal_data):
     '''Notify when connected to IRC server.'''
-    if weechat.config_get_plugin('show_server') == 'on':
+    if (weechat.config_get_plugin('show_server') == 'on'
+	or (weechat.config_get_plugin('show_server') == "away"	   
+		     and STATE['is_away'])):
         a_notify(
             'Server',
             'Server Connected',
@@ -128,7 +145,9 @@ def cb_irc_server_connected(data, signal, signal_data):
 
 def cb_irc_server_disconnected(data, signal, signal_data):
     '''Notify when disconnected to IRC server.'''
-    if weechat.config_get_plugin('show_server') == 'on':
+    if (weechat.config_get_plugin('show_server') == 'on'
+	or (weechat.config_get_plugin('show_server') == "away"	   
+		     and STATE['is_away'])):
         a_notify(
             'Server',
             'Server Disconnected',
@@ -138,7 +157,9 @@ def cb_irc_server_disconnected(data, signal, signal_data):
 
 def cb_notify_upgrade_ended(data, signal, signal_data):
     '''Notify on end of WeeChat upgrade.'''
-    if weechat.config_get_plugin('show_upgrade_ended') == 'on':
+    if (weechat.config_get_plugin('show_upgrade_ended') == 'on'
+	or (weechat.config_get_plugin('show_upgrade_ended') == "away"	   
+		     and STATE['is_away'])):
         a_notify(
             'WeeChat',
             'WeeChat Upgraded',
@@ -148,7 +169,9 @@ def cb_notify_upgrade_ended(data, signal, signal_data):
 
 def notify_highlighted_message(buffername, prefix, message):
     '''Notify on highlighted message.'''
-    if weechat.config_get_plugin("show_highlighted_message") == "on":
+    if (weechat.config_get_plugin("show_highlighted_message") == "on"
+	or (weechat.config_get_plugin("show_highlighted_message") == "away"	   
+		     and STATE['is_away'])):
         a_notify(
             'Highlight',
             'Highlighted on {0} by {1}'.format(buffername, prefix),
@@ -169,7 +192,9 @@ def notify_public_message_or_action(buffername, prefix, message, highlighted):
     else:
         if highlighted:
             notify_highlighted_message(buffername, prefix, message)
-        elif weechat.config_get_plugin("show_public_message") == "on":
+        elif (weechat.config_get_plugin("show_public_message") == "on"
+		or (weechat.config_get_plugin("show_public_message") == "away"	   
+		     and STATE['is_away'])):
             a_notify(
                 'Public',
                 'Public Message on {0}'.format(buffername),
@@ -195,7 +220,9 @@ def notify_private_message_or_action(buffername, prefix, message, highlighted):
         else:
             if highlighted:
                 notify_highlighted_message(buffername, prefix, message)
-            elif weechat.config_get_plugin("show_private_message") == "on":
+            elif (weechat.config_get_plugin("show_private_message") == "on"
+			or (weechat.config_get_plugin("show_private_message") == "away"	   
+		     and STATE['is_away'])):
                 a_notify(
                     'Private',
                     'Private Message',
@@ -206,7 +233,9 @@ def notify_public_action_message(buffername, prefix, message, highlighted):
     '''Notify on public action message.'''
     if highlighted:
         notify_highlighted_message(buffername, prefix, message)
-    elif weechat.config_get_plugin("show_public_action_message") == "on":
+    elif (weechat.config_get_plugin("show_public_action_message") == "on"
+	or (weechat.config_get_plugin("show_public_action_message") == "away"	   
+		     and STATE['is_away'])):
         a_notify(
             'Action',
             'Public Action Message on {0}'.format(buffername),
@@ -218,7 +247,9 @@ def notify_private_action_message(buffername, prefix, message, highlighted):
     '''Notify on private action message.'''
     if highlighted:
         notify_highlighted_message(buffername, prefix, message)
-    elif weechat.config_get_plugin("show_private_action_message") == "on":
+    elif (weechat.config_get_plugin("show_private_action_message") == "on"
+	or (weechat.config_get_plugin("show_private_action_message") == "away"	   
+		     and STATE['is_away'])):
         a_notify(
             'Action',
             'Private Action Message',
@@ -234,8 +265,10 @@ def notify_notice_message(buffername, prefix, message, highlighted):
         message = match.group(2)
         if highlighted:
             notify_highlighted_message(buffername, prefix, message)
-        elif weechat.config_get_plugin("show_notice_message") == "on":
-            a_notify(
+        elif (weechat.config_get_plugin("show_notice_message") == "on"
+		or (weechat.config_get_plugin("show_notice_message") == "away"	   
+		     and STATE['is_away'])):
+		   a_notify(
                 'Notice',
                 'Notice Message',
                 '{0}: {1}'.format(prefix, message))
@@ -243,7 +276,9 @@ def notify_notice_message(buffername, prefix, message, highlighted):
 
 def notify_invite_message(buffername, prefix, message, highlighted):
     '''Notify on channel invitation message.'''
-    if weechat.config_get_plugin("show_invite_message") == "on":
+    if (weechat.config_get_plugin("show_invite_message") == "on"
+	or (weechat.config_get_plugin("show_invite_message") == "away"	   
+		     and STATE['is_away'])):
         regex = re.compile(
             r'^You have been invited to ([^\s]+) by ([^\s]+)$', re.UNICODE)
         match = regex.match(message)
@@ -258,7 +293,9 @@ def notify_invite_message(buffername, prefix, message, highlighted):
 
 def notify_channel_topic(buffername, prefix, message, highlighted):
     '''Notify on channel topic change.'''
-    if weechat.config_get_plugin("show_channel_topic") == "on":
+    if (weechat.config_get_plugin("show_channel_topic") == "on"
+	or (weechat.config_get_plugin("show_channel_topic") == "away"	   
+		     and STATE['is_away'])):
         regex = re.compile(
             r'^\w+ has (?:changed|unset) topic for ([^\s]+)' +
                 '(?:(?: from "(?:.+)")? to "(.+)")?',
@@ -275,7 +312,9 @@ def notify_channel_topic(buffername, prefix, message, highlighted):
 
 def notify_dcc_chat_request(match):
     '''Notify on DCC chat request.'''
-    if weechat.config_get_plugin("show_dcc") == "on":
+    if (weechat.config_get_plugin("show_dcc") == "on"
+	or (weechat.config_get_plugin("show_dcc") == "away"	   
+		     and STATE['is_away'])):
         nick = match.group(1)
         a_notify(
             'DCC',
@@ -285,7 +324,9 @@ def notify_dcc_chat_request(match):
 
 def notify_dcc_chat_closed(match):
     '''Notify on DCC chat termination.'''
-    if weechat.config_get_plugin("show_dcc") == "on":
+    if (weechat.config_get_plugin("show_dcc") == "on"
+	or (weechat.config_get_plugin("show_dcc") == "away"	   
+		     and STATE['is_away'])):
         nick = match.group(1)
         a_notify(
             'DCC',
@@ -295,7 +336,9 @@ def notify_dcc_chat_closed(match):
 
 def notify_dcc_get_request(match):
     'Notify on DCC get request.'
-    if weechat.config_get_plugin("show_dcc") == "on":
+    if (weechat.config_get_plugin("show_dcc") == "on"
+	or (weechat.config_get_plugin("show_dcc") == "away"	   
+		     and STATE['is_away'])):
         nick = match.group(1)
         file_name = match.group(2)
         a_notify(
@@ -306,30 +349,76 @@ def notify_dcc_get_request(match):
 
 def notify_dcc_get_completed(match):
     'Notify on DCC get completion.'
-    if weechat.config_get_plugin("show_dcc") == "on":
+    if (weechat.config_get_plugin("show_dcc") == "on"
+	or (weechat.config_get_plugin("show_dcc") == "away"	   
+		     and STATE['is_away'])):
+        nick = match.group(2)
         file_name = match.group(1)
-        a_notify('DCC', 'Download Complete', file_name)
+        a_notify(
+			'DCC',
+			'Download Complete',
+			'Downloading {1} from {0} completed.'.format(nick, file_name))
 
 
 def notify_dcc_get_failed(match):
     'Notify on DCC get failure.'
-    if weechat.config_get_plugin("show_dcc") == "on":
+    if (weechat.config_get_plugin("show_dcc") == "on"
+	or (weechat.config_get_plugin("show_dcc") == "away"	   
+		     and STATE['is_away'])):
         file_name = match.group(1)
-        a_notify('DCC', 'Download Failed', file_name)
+        a_notify(
+			'DCC',
+			'Download Failed',
+			'Downloading {1} from {0} failed.'.format(nick, file_name))
 
+def notify_dcc_send_offer(match):
+    'Notify on DCC send offer.'
+    if (weechat.config_get_plugin("show_dcc") == "on"
+	or (weechat.config_get_plugin("show_dcc") == "away"	   
+		     and STATE['is_away'])):
+        nick = match.group(1)
+        file_name = match.group(3)
+        a_notify(
+            'DCC',
+            'Offering File Upload',
+            'Offering {1} to {0}.'.format(nick, file_name))
 
+def notify_dcc_send_start(match):
+    'Notify on DCC send start.'
+    if (weechat.config_get_plugin("show_dcc") == "on"
+	or (weechat.config_get_plugin("show_dcc") == "away"	   
+		     and STATE['is_away'])):
+        nick = match.group(1)
+        file_name = match.group(3)
+        a_notify(
+            'DCC',
+            'Start File Upload',
+            'Uploading {1} to {0}.'.format(nick, file_name))
+			
 def notify_dcc_send_completed(match):
     'Notify on DCC send completion.'
-    if weechat.config_get_plugin("show_dcc") == "on":
+    if (weechat.config_get_plugin("show_dcc") == "on"
+	or (weechat.config_get_plugin("show_dcc") == "away"	   
+		     and STATE['is_away'])):
+        nick = match.group(2)
         file_name = match.group(1)
-        a_notify('DCC', 'Upload Complete', file_name)
+        a_notify(
+		'DCC',
+		'Upload Complete',
+		'Upload {1} to {0} completed.'.format(nick, file_name))
 
 
 def notify_dcc_send_failed(match):
     'Notify on DCC send failure.'
-    if weechat.config_get_plugin("show_dcc") == "on":
+    if (weechat.config_get_plugin("show_dcc") == "on"
+	or (weechat.config_get_plugin("show_dcc") == "away"	   
+		     and STATE['is_away'])):
+        nick = match.group(2)
         file_name = match.group(1)
-        a_notify('DCC', 'Upload Failed', file_name)
+        a_notify(
+		'DCC',
+		'Upload Failed',
+		'Upload {1} to {0} failed.'.format(nick, file_name))
 
 
 # -----------------------------------------------------------------------------
@@ -385,11 +474,6 @@ def cb_process_message(
 
 
 def a_notify(notification, subject, message):
-    if STATE['is_away'] and weechat.config_get_plugin('sticky_away') == 'off':
-        return
-    if not STATE['is_away'] and weechat.config_get_plugin('sticky') == 'off':
-        return
-
     msg = MIMEText(message)
     msg['From'] = weechat.config_get_plugin('email_from')
     msg['To'] = weechat.config_get_plugin('email_to')
