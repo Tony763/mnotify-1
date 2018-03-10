@@ -22,6 +22,9 @@
 #Help:
 #Install and configure msmtp first (msmtp.sourceforge.net/)
 #List and Change plugin settings by /set plugins.var.python.mnotify.*
+#/set env LANG en_US.UTF-8
+#/save
+#/upgrade
 
 # -----------------------------------------------------------------------------
 # Imports
