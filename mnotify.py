@@ -18,13 +18,16 @@
 #Added dcc send offer and dcc send start notify
 #Setting for notify is divided to off(don't send), on(always send), away(send only when away).
 #Changed default settings to match new scheme
+#DCC get request show name with ip, network and size of file.
 #
 #Help:
 #Install and configure msmtp first (msmtp.sourceforge.net/)
 #List and Change plugin settings by /set plugins.var.python.mnotify.*
+#Change language to english -otherwise this will not work 
 #/set env LANG en_US.UTF-8
 #/save
 #/upgrade
+#
 
 # -----------------------------------------------------------------------------
 # Imports
@@ -87,7 +90,7 @@ UNTAGGED_MESSAGES = {
         re.compile(r'^xfer: chat closed with ([^\s]+) \(', re.UNICODE),
     'dcc get request':
         re.compile(
-            r'^xfer: incoming file from ([^\s]+) [^:]+: ((?:,\w|[^,])+),',
+            r'^xfer: incoming file from (^\s|.+), name: ((?:,\w|[^,])+), (\d+) bytes',
             re.UNICODE),
     'dcc get completed':
         re.compile(r'^xfer: file ((?:,\w|[^,])+) received from ([^\s]+) ((?:,\w|[^,]+)): OK$', re.UNICODE),
@@ -337,6 +340,7 @@ def notify_dcc_chat_closed(match):
             'Direct chat with {0} has ended.'.format(nick))
 
 
+			
 def notify_dcc_get_request(match):
     'Notify on DCC get request.'
     if (weechat.config_get_plugin("show_dcc") == "on"
@@ -344,10 +348,11 @@ def notify_dcc_get_request(match):
 		     and STATE['is_away'])):
         nick = match.group(1)
         file_name = match.group(2)
+        file_size = int(match.group(3))
         a_notify(
             'DCC',
             'File Transfer Request',
-            '{0} wants to send you {1}.'.format(nick, file_name))
+            '{0} wants to send you {1} and size is {2}.'.format(nick, file_name, humanbytes(file_size)))
 
 
 def notify_dcc_get_completed(match):
@@ -475,7 +480,24 @@ def cb_process_message(
             return weechat.WEECHAT_RC_OK
     return weechat.WEECHAT_RC_OK
 
-
+def humanbytes(B):
+        B = float(B)
+        KB = float(1024)
+        MB = float(KB ** 2) # 1,048,576
+        GB = float(KB ** 3) # 1,073,741,824
+        TB = float(KB ** 4) # 1,099,511,627,776
+        if B < KB:
+            return '{0} {1}'.format(B,'Bytes' if 0 == B > 1 else 'Byte')
+        elif KB <= B < MB:
+            return '{0:.2f} KB'.format(B/KB)
+        elif MB <= B < GB:
+            return '{0:.2f} MB'.format(B/MB)
+        elif GB <= B < TB:
+            return '{0:.2f} GB'.format(B/GB)
+        elif TB <= B:
+            return '{0:.2f} TB'.format(B/TB)
+	
+	
 def a_notify(notification, subject, message):
     msg = MIMEText(message)
     msg['From'] = weechat.config_get_plugin('email_from')
